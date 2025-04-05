@@ -170,9 +170,12 @@ class OptimizedImageProcessor(Node):
                                     min_depth = np.min(valid_depths)
                                     max_depth = np.max(valid_depths)
                                     
-                                    # Hiển thị thông tin depth
+                                    # Sử dụng nghịch đảo của độ sâu trung bình để tính khoảng cách
+                                    distance = 1 / avg_depth if avg_depth > 0 else float('inf')
+                                    
+                                    # Hiển thị thông tin khoảng cách
                                     cv2.putText(frame, 
-                                                f"Depth: {avg_depth:.2f}m", 
+                                                f"Distance: {distance:.2f}m", 
                                                 (x1, y1 - 30), 
                                                 cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
                                     
