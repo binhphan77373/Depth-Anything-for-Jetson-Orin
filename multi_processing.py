@@ -13,14 +13,12 @@ from cv_bridge import CvBridge
 from ultralytics import YOLO
 from depth import DepthEngine
 
-def calculate_distance(depth_map, box, depth_scale=1.0, inverse=True):
+def calculate_distance(depth_map, box):
     """
     Tính khoảng cách từ đối tượng đến camera dựa trên depth map
     
     depth_map: mảng numpy chứa thông tin độ sâu
     box: bounding box của đối tượng [x1, y1, x2, y2]
-    depth_scale: tỷ lệ để chuyển đổi từ giá trị độ sâu sang khoảng cách thực tế (mét)
-    inverse: đảo ngược khoảng cách (True nếu giá trị nhỏ là xa, False nếu giá trị lớn là xa)
     
     Trả về: khoảng cách trung bình của đối tượng (đơn vị: mét)
     """
@@ -50,19 +48,7 @@ def calculate_distance(depth_map, box, depth_scale=1.0, inverse=True):
         valid_depths = object_depth[object_depth > 0.01]
         if valid_depths.size > 0:
             # Sử dụng trung vị thay vì trung bình để giảm ảnh hưởng của nhiễu
-            avg_depth = np.median(valid_depths)
-            
-            # Áp dụng tỷ lệ chuyển đổi
-            if inverse:
-                # Đảo ngược khoảng cách: giá trị lớn = gần, giá trị nhỏ = xa
-                # Sử dụng 1.0 làm giá trị chuẩn để đảo ngược
-                # Cần điều chỉnh hệ số này tùy theo dải giá trị của depth map
-                norm_factor = 1.0
-                distance = norm_factor / (avg_depth + 0.001) * depth_scale
-            else:
-                # Giữ nguyên: giá trị lớn = xa, giá trị nhỏ = gần
-                distance = avg_depth * depth_scale
-                
+            distance = np.median(valid_depths)
             return distance
     
     # Trả về -1 nếu không thể tính khoảng cách
@@ -98,10 +84,6 @@ class OptimizedImageProcessor(Node):
         # FPS Tracking
         self.fps = 0
         self.frame_times = []
-        
-        # Depth configuration
-        self.depth_scale = 10.0
-        self.inverse_depth = True
 
     def _initialize_models(self):
         """Lazy initialization of models"""
@@ -161,9 +143,7 @@ class OptimizedImageProcessor(Node):
                             for box in boxes:
                                 try:
                                     dist = calculate_distance(
-                                        depth_raw, box, 
-                                        depth_scale=self.depth_scale,
-                                        inverse=self.inverse_depth
+                                        depth_raw, box
                                     )
                                     distances.append(dist)
                                 except Exception as e:
