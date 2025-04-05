@@ -13,14 +13,16 @@ from cv_bridge import CvBridge
 from ultralytics import YOLO
 from depth import DepthEngine
 
-def calculate_distance(depth_map, box):
+def calculate_distance(depth_map, box, depth_scale=1.0, inverse=True):
     """
-    Trích xuất độ sâu từ đối tượng trong depth map
+    Tính khoảng cách từ đối tượng đến camera dựa trên depth map
     
     depth_map: mảng numpy chứa thông tin độ sâu
     box: bounding box của đối tượng [x1, y1, x2, y2]
+    depth_scale: tỷ lệ để chuyển đổi từ giá trị độ sâu sang khoảng cách thực tế (mét)
+    inverse: đảo ngược khoảng cách (True nếu giá trị nhỏ là xa, False nếu giá trị lớn là xa)
     
-    Trả về: độ sâu của vùng trung tâm đối tượng
+    Trả về: khoảng cách trung bình của đối tượng (đơn vị: mét)
     """
     # Trích xuất vùng đối tượng từ depth map
     x1, y1, x2, y2 = map(int, box)
@@ -42,12 +44,29 @@ def calculate_distance(depth_map, box):
     # Lấy phần depth map tương ứng với vùng trung tâm của đối tượng
     object_depth = depth_map[center_y1:center_y2, center_x1:center_x2]
     
-    # Trả về trực tiếp object_depth - là depth map vùng trung tâm của đối tượng
+    # Tính khoảng cách trung bình (bỏ qua giá trị 0 nếu có)
     if object_depth.size > 0:
-        return object_depth
+        # Loại bỏ các giá trị quá nhỏ hoặc quá lớn (outliers)
+        valid_depths = object_depth[object_depth > 0.01]
+        if valid_depths.size > 0:
+            # Sử dụng trung vị thay vì trung bình để giảm ảnh hưởng của nhiễu
+            avg_depth = np.median(valid_depths)
+            
+            # Áp dụng tỷ lệ chuyển đổi
+            if inverse:
+                # Đảo ngược khoảng cách: giá trị lớn = gần, giá trị nhỏ = xa
+                # Sử dụng 1.0 làm giá trị chuẩn để đảo ngược
+                # Cần điều chỉnh hệ số này tùy theo dải giá trị của depth map
+                norm_factor = 1.0
+                distance = norm_factor / (avg_depth + 0.001) * depth_scale
+            else:
+                # Giữ nguyên: giá trị lớn = xa, giá trị nhỏ = gần
+                distance = avg_depth * depth_scale
+                
+            return distance
     
-    # Trả về None nếu không thể lấy được depth map
-    return None
+    # Trả về -1 nếu không thể tính khoảng cách
+    return -1
 
 class OptimizedImageProcessor(Node):
     def __init__(self):
@@ -79,6 +98,10 @@ class OptimizedImageProcessor(Node):
         # FPS Tracking
         self.fps = 0
         self.frame_times = []
+        
+        # Depth configuration
+        self.depth_scale = 10.0
+        self.inverse_depth = True
 
     def _initialize_models(self):
         """Lazy initialization of models"""
@@ -133,23 +156,25 @@ class OptimizedImageProcessor(Node):
                         labels = [result.names[int(box.cls[0])] for box in result.boxes]
                         
                         # Tính khoảng cách nếu depth map hợp lệ
-                        depth_maps = []
+                        distances = []
                         if depth_available:
                             for box in boxes:
                                 try:
-                                    object_depth_map = calculate_distance(
-                                        depth_raw, box
+                                    dist = calculate_distance(
+                                        depth_raw, box, 
+                                        depth_scale=self.depth_scale,
+                                        inverse=self.inverse_depth
                                     )
-                                    depth_maps.append(object_depth_map)
+                                    distances.append(dist)
                                 except Exception as e:
-                                    self.get_logger().error(f"Lỗi khi lấy depth map: {e}")
-                                    depth_maps.append(None)
+                                    self.get_logger().error(f"Lỗi khi tính khoảng cách: {e}")
+                                    distances.append(-1)
                         else:
-                            # Nếu không có depth, đặt tất cả depth map thành None
-                            depth_maps = [None] * len(boxes)
+                            # Nếu không có depth, đặt tất cả khoảng cách thành -1
+                            distances = [-1] * len(boxes)
                         
                         # Vẽ bounding box và hiển thị khoảng cách
-                        for i, (box, label, depth_map) in enumerate(zip(boxes, labels, depth_maps)):
+                        for i, (box, label, distance) in enumerate(zip(boxes, labels, distances)):
                             x1, y1, x2, y2 = map(int, box)
                             
                             # Vẽ bounding box
@@ -161,35 +186,19 @@ class OptimizedImageProcessor(Node):
                                         (x1, y1 - 10),
                                         cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 2)
                             
-                            # Hiển thị thông tin về depth map nếu có
-                            if depth_map is not None and depth_map.size > 0:
-                                # Tính giá trị trung bình của depth map (bỏ qua giá trị 0)
-                                valid_depths = depth_map[depth_map > 0.01]
-                                if valid_depths.size > 0:
-                                    avg_depth = np.mean(valid_depths)
-                                    min_depth = np.min(valid_depths)
-                                    max_depth = np.max(valid_depths)
-                                    
-                                    # Sử dụng nghịch đảo của độ sâu trung bình để tính khoảng cách
-                                    distance = 1 / avg_depth if avg_depth > 0 else float('inf')
-                                    
-                                    # Hiển thị thông tin khoảng cách
+                            # Hiển thị khoảng cách
+                            if distance > 0:
+                                cv2.putText(frame, 
+                                            f"{distance:.2f}m", 
+                                            (x1, y1 - 30), 
+                                            cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
+                                
+                                # Cảnh báo khi đối tượng quá gần (tuỳ chọn)
+                                if distance < 1.5:
                                     cv2.putText(frame, 
-                                                f"Distance: {distance:.2f}m", 
-                                                (x1, y1 - 30), 
-                                                cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
-                                    
-                                    cv2.putText(frame, 
-                                                f"Min: {min_depth:.2f}m, Max: {max_depth:.2f}m", 
+                                                f"Cảnh báo: {label} quá gần!", 
                                                 (x1, y1 - 50), 
-                                                cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
-                                    
-                                    # Cảnh báo khi đối tượng quá gần (sử dụng giá trị depth nhỏ nhất)
-                                    if min_depth < 1.5:
-                                        cv2.putText(frame, 
-                                                    f"Cảnh báo: {label} quá gần!", 
-                                                    (x1, y1 - 70), 
-                                                    cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
+                                                cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
 
                 return frame
         except Exception as e:
