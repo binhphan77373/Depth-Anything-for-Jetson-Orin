@@ -11,7 +11,62 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 
 from ultralytics import YOLO
-from depth_anythingv1 import DepthEngine
+from depth import DepthEngine
+
+def calculate_distance(depth_map, box, depth_scale=1.0, inverse=True):
+    """
+    Tính khoảng cách từ đối tượng đến camera dựa trên depth map
+    
+    depth_map: mảng numpy chứa thông tin độ sâu
+    box: bounding box của đối tượng [x1, y1, x2, y2]
+    depth_scale: tỷ lệ để chuyển đổi từ giá trị độ sâu sang khoảng cách thực tế (mét)
+    inverse: đảo ngược khoảng cách (True nếu giá trị nhỏ là xa, False nếu giá trị lớn là xa)
+    
+    Trả về: khoảng cách trung bình của đối tượng (đơn vị: mét)
+    """
+    # Trích xuất vùng đối tượng từ depth map
+    x1, y1, x2, y2 = map(int, box)
+    
+    # Lấy vùng trung tâm của đối tượng (30% diện tích giữa)
+    center_width = int((x2 - x1) * 0.3)
+    center_height = int((y2 - y1) * 0.3)
+    center_x1 = x1 + (x2 - x1)//2 - center_width//2
+    center_y1 = y1 + (y2 - y1)//2 - center_height//2
+    center_x2 = center_x1 + center_width
+    center_y2 = center_y1 + center_height
+    
+    # Đảm bảo vùng trung tâm nằm trong ảnh
+    center_x1 = max(0, center_x1)
+    center_y1 = max(0, center_y1)
+    center_x2 = min(depth_map.shape[1], center_x2)
+    center_y2 = min(depth_map.shape[0], center_y2)
+    
+    # Lấy phần depth map tương ứng với vùng trung tâm của đối tượng
+    object_depth = depth_map[center_y1:center_y2, center_x1:center_x2]
+    
+    # Tính khoảng cách trung bình (bỏ qua giá trị 0 nếu có)
+    if object_depth.size > 0:
+        # Loại bỏ các giá trị quá nhỏ hoặc quá lớn (outliers)
+        valid_depths = object_depth[object_depth > 0.01]
+        if valid_depths.size > 0:
+            # Sử dụng trung vị thay vì trung bình để giảm ảnh hưởng của nhiễu
+            avg_depth = np.median(valid_depths)
+            
+            # Áp dụng tỷ lệ chuyển đổi
+            if inverse:
+                # Đảo ngược khoảng cách: giá trị lớn = gần, giá trị nhỏ = xa
+                # Sử dụng 1.0 làm giá trị chuẩn để đảo ngược
+                # Cần điều chỉnh hệ số này tùy theo dải giá trị của depth map
+                norm_factor = 1.0
+                distance = norm_factor / (avg_depth + 0.001) * depth_scale
+            else:
+                # Giữ nguyên: giá trị lớn = xa, giá trị nhỏ = gần
+                distance = avg_depth * depth_scale
+                
+            return distance
+    
+    # Trả về -1 nếu không thể tính khoảng cách
+    return -1
 
 class OptimizedImageProcessor(Node):
     def __init__(self):
@@ -43,12 +98,16 @@ class OptimizedImageProcessor(Node):
         # FPS Tracking
         self.fps = 0
         self.frame_times = []
+        
+        # Depth configuration
+        self.depth_scale = 10.0
+        self.inverse_depth = True
 
     def _initialize_models(self):
         """Lazy initialization of models"""
         if self.depth_engine is None:
             with torch.cuda.device(self.device):
-                self.depth_engine = DepthEngine()
+                self.depth_engine = DepthEngine(raw=True)  # Quan trọng: cần raw depth map
         if self.model is None:
             self.model = YOLO("yolo11n.onnx")
 
@@ -71,8 +130,9 @@ class OptimizedImageProcessor(Node):
                 self._initialize_models()
 
             with torch.cuda.device(self.device):
-                # Depth Estimation
-                depth = self._process_depth(frame)
+                # Depth Estimation - Lấy raw depth map
+                depth_raw = self._process_depth(frame)
+                
                 # Object Detection
                 object_frame = frame.copy()
                 results = self.model(object_frame)
@@ -80,45 +140,46 @@ class OptimizedImageProcessor(Node):
                 # Process Detection Results
                 for result in results:
                     if hasattr(result, 'boxes'):
-                        # Draw Bounding Boxes
-                        for box in result.boxes:
-                            cv2.rectangle(frame, 
-                                         (int(box.xyxy[0][0]), int(box.xyxy[0][1])),
-                                         (int(box.xyxy[0][2]), int(box.xyxy[0][3])), 
-                                         (255, 0, 0), 2)
-                            
-                            # Object Label
-                            cv2.putText(frame, 
-                                        f"{result.names[int(box.cls[0])]}", 
-                                        (int(box.xyxy[0][0]), int(box.xyxy[0][1]) - 10),
-                                        cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 2)
-
-                        # Depth Calculations
-                        depths = self._extract_depth_from_boxes(
-                            [box.xyxy[0] for box in result.boxes], 
-                            depth
-                        )
+                        # Bounding boxes mỗi đối tượng được nhận diện
+                        boxes = [box.xyxy[0] for box in result.boxes]
+                        labels = [result.names[int(box.cls[0])] for box in result.boxes]
                         
-                        objects = self._extract_bounding_boxes_and_depth(
-                            [box.xyxy[0] for box in result.boxes], 
-                            [result.names[int(box.cls[0])] for box in result.boxes], 
-                            depths
-                        )
-
-                        # Display Depth Information
-                        for obj in objects:
-                            cv2.putText(frame, 
-                                        f"{obj['depth']:.2f} m", 
-                                        (obj['x1'], obj['y1'] - 10), 
-                                        cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
+                        # Tính khoảng cách của các đối tượng
+                        distances = []
+                        for box in boxes:
+                            dist = calculate_distance(
+                                depth_raw, box, 
+                                depth_scale=self.depth_scale,
+                                inverse=self.inverse_depth
+                            )
+                            distances.append(dist)
+                        
+                        # Vẽ bounding box và hiển thị khoảng cách
+                        for i, (box, label, distance) in enumerate(zip(boxes, labels, distances)):
+                            x1, y1, x2, y2 = map(int, box)
                             
-                            # Check if object depth is less than 1.5 meters
-                            # if obj['depth'] < 1.5:
-                            #     warning_text = f"Warning: {obj['class']} too close! {obj['depth']:.2f} m"
-                            #     cv2.putText(frame, 
-                            #                 warning_text,
-                            #                 (obj['x1'], obj['y1'] - 30), 
-                            #                 cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
+                            # Vẽ bounding box
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                            
+                            # Hiển thị nhãn đối tượng
+                            cv2.putText(frame, 
+                                        f"{label}", 
+                                        (x1, y1 - 10),
+                                        cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 2)
+                            
+                            # Hiển thị khoảng cách
+                            if distance > 0:
+                                cv2.putText(frame, 
+                                            f"{distance:.2f}m", 
+                                            (x1, y1 - 30), 
+                                            cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
+                                
+                                # Cảnh báo khi đối tượng quá gần (tuỳ chọn)
+                                if distance < 1.5:
+                                    cv2.putText(frame, 
+                                                f"Cảnh báo: {label} quá gần!", 
+                                                (x1, y1 - 50), 
+                                                cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
 
                 return frame
         except Exception as e:
@@ -141,38 +202,16 @@ class OptimizedImageProcessor(Node):
         return self.fps
 
     def _process_depth(self, depth_frame):
-        """Depth estimation with error handling"""
+        """
+        Xử lý depth estimation và trả về raw depth map để tính khoảng cách chính xác
+        """
         try:
-            depth = self.depth_engine.infer(depth_frame)
-            depth_resized = cv2.resize(depth, (depth_frame.shape[1], depth_frame.shape[0]))
-            depth_resized = cv2.cvtColor(depth_resized, cv2.COLOR_BGR2GRAY)
-            return 255 - depth_resized
+            # Lấy raw depth map thay vì depth map đã xử lý màu
+            depth_raw = self.depth_engine.infer(depth_frame)
+            return depth_raw
         except Exception as e:
             self.get_logger().error(f'Depth estimation error: {e}')
-            return np.zeros_like(depth_frame, dtype=np.uint8)
-
-    def _extract_depth_from_boxes(self, boxes, depth_map):
-        """Extract depth for detected objects"""
-        object_depths = []
-        for box in boxes:
-            x1, y1, x2, y2 = map(int, box)
-            object_depth_map = depth_map[y1:y2, x1:x2]
-            median_depth = np.mean(object_depth_map)
-            object_depths.append(median_depth)
-        return object_depths
-
-    def _extract_bounding_boxes_and_depth(self, detected_boxes, detected_labels, depths):
-        """Create detailed object information"""
-        objects = []
-        for i, box in enumerate(detected_boxes):
-            x1, y1, x2, y2 = map(int, box)
-            obj = {
-                'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
-                'class': detected_labels[i],
-                'depth': depths[i]
-            }
-            objects.append(obj)
-        return objects
+            return np.zeros((depth_frame.shape[0], depth_frame.shape[1]), dtype=np.float32)
 
     def run_processing(self):
         """Main processing method with multithreading and performance tracking"""
