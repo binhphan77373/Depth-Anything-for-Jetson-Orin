@@ -143,6 +143,8 @@ class OptimizedImageProcessor(Node):
     def _initialize_models(self):
         """Lazy initialization of models"""
         if self.depth_engine is None:
+            # Đảm bảo ngữ cảnh CUDA được khởi tạo trong luồng hiện tại
+            torch.cuda.init()
             with torch.cuda.device(self.device):
                 self.depth_engine = DepthEngine(
                     trt_engine_path=self.engine_path,
@@ -245,6 +247,9 @@ class OptimizedImageProcessor(Node):
 
     def processing_worker(self):
         """Worker thread for processing frames"""
+        # Khởi tạo ngữ cảnh CUDA cho luồng này
+        torch.cuda.init()
+        
         while not self.stop_event.is_set():
             try:
                 # Lấy frame từ queue
@@ -294,7 +299,7 @@ def main(args=None):
     node = OptimizedImageProcessor()
     
     try:
-        torch.cuda.init()
+        # Đã chuyển việc khởi tạo CUDA vào luồng worker
         node.run_processing()
     except Exception as e:
         node.get_logger().error(f"Lỗi trong xử lý chính: {e}")
