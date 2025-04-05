@@ -109,7 +109,7 @@ class OptimizedImageProcessor(Node):
             with torch.cuda.device(self.device):
                 self.depth_engine = DepthEngine(raw=True)  # Quan trọng: cần raw depth map
         if self.model is None:
-            self.model = YOLO("yolo11n.onnx")
+            self.model = YOLO("/home/orin/test_ws/Depth-Anything-for-Jetson-Orin/weights/yolo11n.onnx")
 
     def listener_callback(self, msg):
         """ROS2 image callback to add frames to processing queue"""
@@ -122,8 +122,8 @@ class OptimizedImageProcessor(Node):
                 pass
         except Exception as e:
             self.get_logger().error(f'Error in listener callback: {e}')
-
-    def process_frame(self, frame):
+    
+    def processing_frame(self, frame):
         """Process single frame with object detection and depth"""
         try:
             if self.model is None or self.depth_engine is None:
@@ -131,11 +131,11 @@ class OptimizedImageProcessor(Node):
 
             with torch.cuda.device(self.device):
                 # Depth Estimation - Lấy raw depth map
-                depth_raw = self._process_depth(frame)
+                depth_raw = self.process_frame(frame.copy())
                 
                 # Object Detection
-                object_frame = frame.copy()
-                results = self.model(object_frame)
+                #object_frame = frame.copy()
+                results = self.model(frame)
 
                 # Process Detection Results
                 for result in results:
@@ -201,18 +201,6 @@ class OptimizedImageProcessor(Node):
         
         return self.fps
 
-    def _process_depth(self, depth_frame):
-        """
-        Xử lý depth estimation và trả về raw depth map để tính khoảng cách chính xác
-        """
-        try:
-            # Lấy raw depth map thay vì depth map đã xử lý màu
-            depth_raw = self.depth_engine.infer(depth_frame)
-            return depth_raw
-        except Exception as e:
-            self.get_logger().error(f'Depth estimation error: {e}')
-            return np.zeros((depth_frame.shape[0], depth_frame.shape[1]), dtype=np.float32)
-
     def run_processing(self):
         """Main processing method with multithreading and performance tracking"""
         cv2.namedWindow("Processed Image", cv2.WINDOW_NORMAL)
@@ -226,7 +214,7 @@ class OptimizedImageProcessor(Node):
                 frame = self.frame_queue.get(timeout=1/30)
                 
                 # Process frame
-                processed_frame = self.process_frame(frame)                                                                                                  
+                processed_frame = self.processing_frame(frame)                                                                                                  
                 self.processed_frames += 1
 
                 # Calculate FPS
