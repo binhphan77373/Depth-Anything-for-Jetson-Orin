@@ -51,13 +51,13 @@ def calculate_distance(depth_map, box, depth_scale=1.0):
 def main():
     # Xử lý tham số dòng lệnh
     parser = argparse.ArgumentParser(description='YOLO và Depth Anything trên video')
-    parser.add_argument('--video', type=str, default="/home/orin/Test/YOLO11_DepthAnythingV1/AriaEverydayActivities_1.0.0_loc5_script4_seq6_rec1_preview_rgb.mp4", 
+    parser.add_argument('--video', type=str, default="/home/orin/Test/Depth-Anything-for-Jetson-Orin/AriaEverydayActivities_1.0.0_loc5_script4_seq6_rec1_preview_rgb.mp4", 
                         help='Đường dẫn đến file video đầu vào')
-    parser.add_argument('--output', type=str, default="output_video.mp4", 
+    parser.add_argument('--output', type=str, default="./output_video.mp4", 
                         help='Đường dẫn file video đầu ra')
-    parser.add_argument('--engine', type=str, default="weights/depth_anything_vits14_308.trt", 
+    parser.add_argument('--engine', type=str, default="./weights/depth_anything_vits14_518.trt", 
                         help='Đường dẫn đến TensorRT engine')
-    parser.add_argument('--yolo_model', type=str, default="yolo11n.pt", 
+    parser.add_argument('--yolo_model', type=str, default="./weights/yolo11n.onnx", 
                         help='Đường dẫn đến mô hình YOLO')
     parser.add_argument('--show', action='store_true', help='Hiển thị kết quả trong quá trình xử lý')
     parser.add_argument('--save_frames', action='store_true', help='Lưu các frame kết quả')
@@ -107,10 +107,10 @@ def main():
             depth_raw = depth_engine.process_frame(frame.copy())
             
             # Tạo bản depth map có màu cho hiển thị
-            depth_colored = cv2.applyColorMap(
-                cv2.normalize(depth_raw, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U),
-                cv2.COLORMAP_INFERNO
-            )
+            # depth_colored = cv2.applyColorMap(
+            #     cv2.normalize(depth_raw, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U),
+            #     cv2.COLORMAP_INFERNO
+            # )
             
             # Thực hiện phát hiện đối tượng với YOLO
             yolo_results = model(frame)
@@ -155,14 +155,14 @@ def main():
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             
             # Kết hợp frame đã annotate và depth map
-            combined_result = np.concatenate((annotated_frame, depth_colored), axis=1)
+            #combined_result = np.concatenate((annotated_frame, depth_colored), axis=1)
             
             # Ghi frame kết quả
-            out.write(combined_result)
+            out.write(annotated_frame)
             
             # Hiển thị kết quả nếu được yêu cầu
             if args.show:
-                cv2.imshow('YOLO + Depth', combined_result)
+                cv2.imshow('YOLO + Depth', annotated_frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
     

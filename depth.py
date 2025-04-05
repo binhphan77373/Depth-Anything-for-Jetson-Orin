@@ -27,9 +27,9 @@ class DepthEngine:
     """
     def __init__(
         self,
-        input_size: int = 308,
+        input_size: int = 518,
         frame_rate: int = 15,
-        trt_engine_path: str = 'weights/depth_anything_vits14_308.trt',
+        trt_engine_path: str = 'weights/depth_anything_vits14_518.trt',
         save_path: str = None,
         raw: bool = False,
         stream: bool = False,
@@ -143,20 +143,19 @@ class DepthEngine:
         # Preprocess the image
         image = self.preprocess(image)
         
-        t0 = time.time()
-        
         # Copy the input image to the pagelocked memory
         np.copyto(self.h_input, image.ravel())
         
         # Copy the input to the GPU, execute the inference, and copy the output back to the CPU
         cuda.memcpy_htod_async(self.d_input, self.h_input, self.cuda_stream)
-        self.context.execute_async_v2(bindings=[int(self.d_input), int(self.d_output)], stream_handle=self.cuda_stream.handle)
+        
+        # Execute the context
+        self.context.execute_v2(bindings=[int(self.d_input), int(self.d_output)])
+        
         cuda.memcpy_dtoh_async(self.h_output, self.d_output, self.cuda_stream)
         self.cuda_stream.synchronize()
-        
-        print(f"Inference time: {time.time() - t0:.4f}s")
-        
-        return self.postprocess(self.h_output) # Postprocess the depth map
+
+        return self.postprocess(self.h_output)  # Postprocess the depth map
     
     def set_frame_size(self, width, height):
         """
