@@ -15,12 +15,12 @@ from depth import DepthEngine
 
 def calculate_distance(depth_map, box):
     """
-    Tính khoảng cách từ đối tượng đến camera dựa trên depth map
+    Trích xuất độ sâu từ đối tượng trong depth map
     
     depth_map: mảng numpy chứa thông tin độ sâu
     box: bounding box của đối tượng [x1, y1, x2, y2]
     
-    Trả về: khoảng cách trung bình của đối tượng (đơn vị: mét)
+    Trả về: độ sâu của vùng trung tâm đối tượng
     """
     # Trích xuất vùng đối tượng từ depth map
     x1, y1, x2, y2 = map(int, box)
@@ -42,17 +42,12 @@ def calculate_distance(depth_map, box):
     # Lấy phần depth map tương ứng với vùng trung tâm của đối tượng
     object_depth = depth_map[center_y1:center_y2, center_x1:center_x2]
     
-    # Tính khoảng cách trung bình (bỏ qua giá trị 0 nếu có)
+    # Trả về trực tiếp object_depth - là depth map vùng trung tâm của đối tượng
     if object_depth.size > 0:
-        # Loại bỏ các giá trị quá nhỏ hoặc quá lớn (outliers)
-        valid_depths = object_depth[object_depth > 0.01]
-        if valid_depths.size > 0:
-            # Sử dụng trung vị thay vì trung bình để giảm ảnh hưởng của nhiễu
-            distance = np.median(valid_depths)
-            return distance
+        return object_depth
     
-    # Trả về -1 nếu không thể tính khoảng cách
-    return -1
+    # Trả về None nếu không thể lấy được depth map
+    return None
 
 class OptimizedImageProcessor(Node):
     def __init__(self):
@@ -138,23 +133,23 @@ class OptimizedImageProcessor(Node):
                         labels = [result.names[int(box.cls[0])] for box in result.boxes]
                         
                         # Tính khoảng cách nếu depth map hợp lệ
-                        distances = []
+                        depth_maps = []
                         if depth_available:
                             for box in boxes:
                                 try:
-                                    dist = calculate_distance(
+                                    object_depth_map = calculate_distance(
                                         depth_raw, box
                                     )
-                                    distances.append(dist)
+                                    depth_maps.append(object_depth_map)
                                 except Exception as e:
-                                    self.get_logger().error(f"Lỗi khi tính khoảng cách: {e}")
-                                    distances.append(-1)
+                                    self.get_logger().error(f"Lỗi khi lấy depth map: {e}")
+                                    depth_maps.append(None)
                         else:
-                            # Nếu không có depth, đặt tất cả khoảng cách thành -1
-                            distances = [-1] * len(boxes)
+                            # Nếu không có depth, đặt tất cả depth map thành None
+                            depth_maps = [None] * len(boxes)
                         
                         # Vẽ bounding box và hiển thị khoảng cách
-                        for i, (box, label, distance) in enumerate(zip(boxes, labels, distances)):
+                        for i, (box, label, depth_map) in enumerate(zip(boxes, labels, depth_maps)):
                             x1, y1, x2, y2 = map(int, box)
                             
                             # Vẽ bounding box
@@ -166,19 +161,32 @@ class OptimizedImageProcessor(Node):
                                         (x1, y1 - 10),
                                         cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 2)
                             
-                            # Hiển thị khoảng cách
-                            if distance > 0:
-                                cv2.putText(frame, 
-                                            f"{distance:.2f}m", 
-                                            (x1, y1 - 30), 
-                                            cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
-                                
-                                # Cảnh báo khi đối tượng quá gần (tuỳ chọn)
-                                if distance < 1.5:
+                            # Hiển thị thông tin về depth map nếu có
+                            if depth_map is not None and depth_map.size > 0:
+                                # Tính giá trị trung bình của depth map (bỏ qua giá trị 0)
+                                valid_depths = depth_map[depth_map > 0.01]
+                                if valid_depths.size > 0:
+                                    avg_depth = np.mean(valid_depths)
+                                    min_depth = np.min(valid_depths)
+                                    max_depth = np.max(valid_depths)
+                                    
+                                    # Hiển thị thông tin depth
                                     cv2.putText(frame, 
-                                                f"Cảnh báo: {label} quá gần!", 
+                                                f"Depth: {avg_depth:.2f}m", 
+                                                (x1, y1 - 30), 
+                                                cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
+                                    
+                                    cv2.putText(frame, 
+                                                f"Min: {min_depth:.2f}m, Max: {max_depth:.2f}m", 
                                                 (x1, y1 - 50), 
-                                                cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
+                                                cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
+                                    
+                                    # Cảnh báo khi đối tượng quá gần (sử dụng giá trị depth nhỏ nhất)
+                                    if min_depth < 1.5:
+                                        cv2.putText(frame, 
+                                                    f"Cảnh báo: {label} quá gần!", 
+                                                    (x1, y1 - 70), 
+                                                    cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
 
                 return frame
         except Exception as e:
