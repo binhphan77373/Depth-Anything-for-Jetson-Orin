@@ -17,6 +17,9 @@ from cv_bridge import CvBridge
 from ultralytics import YOLO
 from depth import DepthEngine
 
+# Thêm khóa đồng bộ hóa cho CUDA
+cuda_lock = threading.Lock()
+
 def calculate_distance(depth_map, box, depth_scale=1.0, inverse=True):
     """
     Tính khoảng cách từ đối tượng đến camera dựa trên depth map
@@ -128,12 +131,31 @@ class OptimizedImageProcessor(Node):
         self.depth_engine = None
         self.processed_frames = 0
         
+        # Kiểm tra và hiển thị thông tin CUDA
+        if torch.cuda.is_available():
+            self.get_logger().info(f'CUDA khả dụng: {torch.cuda.is_available()}')
+            self.get_logger().info(f'Số lượng GPU: {torch.cuda.device_count()}')
+            self.get_logger().info(f'GPU hiện tại: {torch.cuda.current_device()}')
+            self.get_logger().info(f'Tên GPU: {torch.cuda.get_device_name(0)}')
+        else:
+            self.get_logger().warning('CUDA không khả dụng! Sẽ sử dụng CPU.')
+        
         # Hiển thị thông tin cấu hình
         self.get_logger().info(f'Engine path: {self.engine_path}')
         self.get_logger().info(f'YOLO model path: {self.yolo_model_path}')
         self.get_logger().info(f'Depth scale: {self.depth_scale}')
         self.get_logger().info(f'Inverse distance: {self.inverse}')
         self.get_logger().info(f'Show results: {self.show}')
+        
+        # Khởi tạo CUDA trong luồng chính
+        if torch.cuda.is_available():
+            try:
+                with cuda_lock:
+                    torch.cuda.init()
+                    torch.cuda.set_device(0)  # Đặt thiết bị mặc định
+                self.get_logger().info('Đã khởi tạo CUDA trong luồng chính')
+            except Exception as e:
+                self.get_logger().error(f'Lỗi khởi tạo CUDA: {e}')
         
         # Khởi tạo luồng xử lý
         self.processing_thread = threading.Thread(target=self.processing_worker)
@@ -142,23 +164,36 @@ class OptimizedImageProcessor(Node):
 
     def _initialize_models(self):
         """Lazy initialization of models"""
-        if self.depth_engine is None:
-            # Đảm bảo ngữ cảnh CUDA được khởi tạo trong luồng hiện tại
-            torch.cuda.init()
-            with torch.cuda.device(self.device):
-                self.depth_engine = DepthEngine(
-                    trt_engine_path=self.engine_path,
-                    stream=False,
-                    record=False,
-                    save=False,
-                    grayscale=False,
-                    raw=True  # Cần giá trị độ sâu thô để tính khoảng cách chính xác
-                )
-            self.get_logger().info('Đã khởi tạo Depth Engine')
-            
-        if self.model is None:
-            self.model = YOLO(self.yolo_model_path)
-            self.get_logger().info('Đã khởi tạo model YOLO')
+        # Sử dụng khóa để ngăn truy cập đồng thời
+        with cuda_lock:
+            if self.depth_engine is None:
+                try:
+                    # Đảm bảo thiết bị hiện tại là thiết bị đúng
+                    if torch.cuda.is_available():
+                        torch.cuda.set_device(0)
+                        current_device = torch.cuda.current_device()
+                        self.get_logger().info(f'Khởi tạo DepthEngine trên thiết bị {current_device}')
+                    
+                    self.depth_engine = DepthEngine(
+                        trt_engine_path=self.engine_path,
+                        stream=False,
+                        record=False,
+                        save=False,
+                        grayscale=False,
+                        raw=True  # Cần giá trị độ sâu thô để tính khoảng cách chính xác
+                    )
+                    self.get_logger().info('Đã khởi tạo Depth Engine')
+                except Exception as e:
+                    self.get_logger().error(f'Lỗi khởi tạo DepthEngine: {str(e)}')
+                    raise
+                
+            if self.model is None:
+                try:
+                    self.model = YOLO(self.yolo_model_path)
+                    self.get_logger().info('Đã khởi tạo model YOLO')
+                except Exception as e:
+                    self.get_logger().error(f'Lỗi khởi tạo YOLO: {str(e)}')
+                    raise
 
     def listener_callback(self, msg):
         """ROS2 image callback to add frames to processing queue"""
@@ -175,22 +210,19 @@ class OptimizedImageProcessor(Node):
 
     def process_frame(self, frame):
         """Xử lý frame với YOLO và Depth Anything"""
-        # Đảm bảo các model đã được khởi tạo
-        self._initialize_models()
-        
         try:
-            # Lấy bản đồ độ sâu
-            depth_raw = self.depth_engine.process_frame(frame.copy())
+            # Đảm bảo các model đã được khởi tạo
+            self._initialize_models()
             
-            # Tạo bản depth map có màu cho hiển thị
-            # depth_colored = cv2.applyColorMap(
-            #     cv2.normalize(depth_raw, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U),
-            #     cv2.COLORMAP_INFERNO
-            # )
+            # Sử dụng khóa để đảm bảo chỉ một luồng truy cập CUDA tại một thời điểm
+            with cuda_lock:
+                # Lấy bản đồ độ sâu
+                depth_raw = self.depth_engine.process_frame(frame.copy())
+                
+                # Phát hiện đối tượng với YOLO
+                yolo_results = self.model(frame)
             
-            # Phát hiện đối tượng với YOLO
-            yolo_results = self.model(frame)
-            
+            # Phần còn lại của xử lý có thể diễn ra bên ngoài khóa
             # Tạo bản sao của frame để vẽ
             annotated_frame = frame.copy()
             
@@ -231,9 +263,6 @@ class OptimizedImageProcessor(Node):
                     cv2.putText(annotated_frame, label, (x1, y1-5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             
-            # Kết hợp frame đã annotate và depth map
-            #annotated_frame = np.concatenate((annotated_frame, depth_colored), axis=1)
-            
             # Hiển thị kết quả nếu được yêu cầu
             if self.show:
                 cv2.imshow('YOLO + Depth', annotated_frame)
@@ -242,13 +271,22 @@ class OptimizedImageProcessor(Node):
             return annotated_frame
             
         except Exception as e:
-            self.get_logger().error(f'Lỗi xử lý frame: {e}')
+            self.get_logger().error(f'Lỗi xử lý frame: {str(e)}')
+            import traceback
+            self.get_logger().error(traceback.format_exc())
             return frame  # Trả về frame gốc nếu có lỗi
 
     def processing_worker(self):
         """Worker thread for processing frames"""
-        # Khởi tạo ngữ cảnh CUDA cho luồng này
-        torch.cuda.init()
+        try:
+            # Khởi tạo CUDA cho luồng worker
+            if torch.cuda.is_available():
+                with cuda_lock:
+                    torch.cuda.init()
+                    torch.cuda.set_device(0)  # Đặt thiết bị mặc định
+                self.get_logger().info('Đã khởi tạo CUDA trong luồng worker')
+        except Exception as e:
+            self.get_logger().error(f'Lỗi khởi tạo CUDA trong worker: {e}')
         
         while not self.stop_event.is_set():
             try:
@@ -275,8 +313,10 @@ class OptimizedImageProcessor(Node):
                 # Không có frame mới để xử lý
                 continue
             except Exception as e:
-                self.get_logger().error(f'Lỗi trong worker: {e}')
-    
+                self.get_logger().error(f'Lỗi trong worker: {str(e)}')
+                import traceback
+                self.get_logger().error(traceback.format_exc())
+
     def run_processing(self):
         """Main processing method with ROS2 spinning"""
         try:
