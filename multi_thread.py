@@ -112,7 +112,7 @@ class OptimizedImageProcessor(Node):
             Image,
             'aria/rgb_image',
             self.listener_callback,
-            10
+            1
         )
 
         self.publisher = self.create_publisher(
@@ -181,10 +181,10 @@ class OptimizedImageProcessor(Node):
             depth_raw = self.depth_engine.process_frame(frame.copy())
             
             # Tạo bản depth map có màu cho hiển thị
-            depth_colored = cv2.applyColorMap(
-                cv2.normalize(depth_raw, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U),
-                cv2.COLORMAP_INFERNO
-            )
+            # depth_colored = cv2.applyColorMap(
+            #     cv2.normalize(depth_raw, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U),
+            #     cv2.COLORMAP_INFERNO
+            # )
             
             # Phát hiện đối tượng với YOLO
             yolo_results = self.model(frame)
@@ -282,7 +282,7 @@ class OptimizedImageProcessor(Node):
         finally:
             self.stop_event.set()
             if self.processing_thread.is_alive():
-                self.processing_thread.join(timeout=1.0)
+                self.processing_thread.join(timeout=1/30)
             if self.show:
                 cv2.destroyAllWindows()
             if hasattr(self, 'depth_engine') and self.depth_engine is not None:
@@ -294,6 +294,7 @@ def main(args=None):
     node = OptimizedImageProcessor()
     
     try:
+        torch.cuda.init()
         node.run_processing()
     except Exception as e:
         node.get_logger().error(f"Lỗi trong xử lý chính: {e}")
