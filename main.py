@@ -4,13 +4,14 @@ from ultralytics import YOLO
 from depth import DepthEngine
 import argparse
 
-def calculate_distance(depth_map, box, depth_scale=1.0):
+def calculate_distance(depth_map, box, depth_scale=1.0, inverse=True):
     """
     Tính khoảng cách từ đối tượng đến camera dựa trên depth map
     
     depth_map: mảng numpy chứa thông tin độ sâu
     box: bounding box của đối tượng [x1, y1, x2, y2]
     depth_scale: tỷ lệ để chuyển đổi từ giá trị độ sâu sang khoảng cách thực tế (mét)
+    inverse: đảo ngược khoảng cách (True nếu giá trị nhỏ là xa, False nếu giá trị lớn là xa)
     
     Trả về: khoảng cách trung bình của đối tượng (đơn vị: mét)
     """
@@ -41,8 +42,18 @@ def calculate_distance(depth_map, box, depth_scale=1.0):
         if valid_depths.size > 0:
             # Sử dụng trung vị thay vì trung bình để giảm ảnh hưởng của nhiễu
             avg_depth = np.median(valid_depths)
+            
             # Áp dụng tỷ lệ chuyển đổi
-            distance = avg_depth * depth_scale
+            if inverse:
+                # Đảo ngược khoảng cách: giá trị lớn = gần, giá trị nhỏ = xa
+                # Sử dụng 1.0 làm giá trị chuẩn để đảo ngược
+                # Cần điều chỉnh hệ số này tùy theo dải giá trị của depth map
+                norm_factor = 1.0
+                distance = norm_factor / (avg_depth + 0.001) * depth_scale
+            else:
+                # Giữ nguyên: giá trị lớn = xa, giá trị nhỏ = gần
+                distance = avg_depth * depth_scale
+                
             return distance
     
     # Trả về -1 nếu không thể tính khoảng cách
@@ -63,6 +74,8 @@ def main():
     parser.add_argument('--save_frames', action='store_true', help='Lưu các frame kết quả')
     parser.add_argument('--depth_scale', type=float, default=10.0, 
                        help='Tỷ lệ chuyển đổi độ sâu sang khoảng cách thực tế (mét)')
+    parser.add_argument('--inverse', action='store_true', default=True,
+                       help='Đảo ngược tính toán khoảng cách (mặc định: True)')
     args = parser.parse_args()
     
     # Khởi tạo mô hình YOLO
@@ -107,10 +120,10 @@ def main():
             depth_raw = depth_engine.process_frame(frame.copy())
             
             # Tạo bản depth map có màu cho hiển thị
-            # depth_colored = cv2.applyColorMap(
-            #     cv2.normalize(depth_raw, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U),
-            #     cv2.COLORMAP_INFERNO
-            # )
+            depth_colored = cv2.applyColorMap(
+                cv2.normalize(depth_raw, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U),
+                cv2.COLORMAP_INFERNO
+            )
             
             # Thực hiện phát hiện đối tượng với YOLO
             yolo_results = model(frame)
@@ -135,7 +148,8 @@ def main():
                     class_name = result.names[class_id]
                     
                     # Tính khoảng cách của đối tượng
-                    distance = calculate_distance(depth_raw, [x1, y1, x2, y2], args.depth_scale)
+                    distance = calculate_distance(depth_raw, [x1, y1, x2, y2], 
+                                                args.depth_scale, args.inverse)
                     
                     # Vẽ bounding box
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
@@ -155,14 +169,14 @@ def main():
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             
             # Kết hợp frame đã annotate và depth map
-            #combined_result = np.concatenate((annotated_frame, depth_colored), axis=1)
+            combined_result = np.concatenate((annotated_frame, depth_colored), axis=1)
             
             # Ghi frame kết quả
-            out.write(annotated_frame)
+            out.write(combined_result)
             
             # Hiển thị kết quả nếu được yêu cầu
             if args.show:
-                cv2.imshow('YOLO + Depth', annotated_frame)
+                cv2.imshow('YOLO + Depth', combined_result)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
     
