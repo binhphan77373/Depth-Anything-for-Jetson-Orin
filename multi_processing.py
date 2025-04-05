@@ -130,11 +130,22 @@ class OptimizedImageProcessor(Node):
                 self._initialize_models()
 
             with torch.cuda.device(self.device):
-                # Depth Estimation - Lấy raw depth map
-                depth_raw = self.process_frame(frame.copy())
+                # Depth Estimation - Lấy raw depth map từ depth_engine.process_frame
+                try:
+                    depth_raw = self.depth_engine.process_frame(frame.copy())
+                    
+                    # Kiểm tra depth_raw có hợp lệ hay không
+                    if depth_raw is None or depth_raw.size == 0 or np.isnan(depth_raw).any():
+                        self.get_logger().warn("Depth map không hợp lệ, chỉ thực hiện phát hiện đối tượng")
+                        depth_available = False
+                    else:
+                        depth_available = True
+                except Exception as e:
+                    self.get_logger().error(f'Depth engine error: {e}')
+                    depth_available = False
+                    depth_raw = None
                 
                 # Object Detection
-                #object_frame = frame.copy()
                 results = self.model(frame)
 
                 # Process Detection Results
@@ -144,15 +155,23 @@ class OptimizedImageProcessor(Node):
                         boxes = [box.xyxy[0] for box in result.boxes]
                         labels = [result.names[int(box.cls[0])] for box in result.boxes]
                         
-                        # Tính khoảng cách của các đối tượng
+                        # Tính khoảng cách nếu depth map hợp lệ
                         distances = []
-                        for box in boxes:
-                            dist = calculate_distance(
-                                depth_raw, box, 
-                                depth_scale=self.depth_scale,
-                                inverse=self.inverse_depth
-                            )
-                            distances.append(dist)
+                        if depth_available:
+                            for box in boxes:
+                                try:
+                                    dist = calculate_distance(
+                                        depth_raw, box, 
+                                        depth_scale=self.depth_scale,
+                                        inverse=self.inverse_depth
+                                    )
+                                    distances.append(dist)
+                                except Exception as e:
+                                    self.get_logger().error(f"Lỗi khi tính khoảng cách: {e}")
+                                    distances.append(-1)
+                        else:
+                            # Nếu không có depth, đặt tất cả khoảng cách thành -1
+                            distances = [-1] * len(boxes)
                         
                         # Vẽ bounding box và hiển thị khoảng cách
                         for i, (box, label, distance) in enumerate(zip(boxes, labels, distances)):
