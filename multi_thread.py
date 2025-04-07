@@ -44,9 +44,8 @@ class OptimizedImageProcessor(Node):
         self.fps = 0
         self.frame_times = []
         
-        # Depth configuration
-        self.depth_scale = 10.0
-        self.inverse_depth = True
+        # Chuyển depth map sang ảnh xám
+        self.convert_depth_to_gray = True
 
     def _initialize_models(self):
         """Lazy initialization of models"""
@@ -85,6 +84,19 @@ class OptimizedImageProcessor(Node):
                         depth_available = False
                     else:
                         depth_available = True
+                        
+                        # Chuyển depth map sang ảnh xám trước khi tính khoảng cách
+                        if self.convert_depth_to_gray:
+                            # Chuẩn hóa depth map về khoảng 0-255
+                            normalized_depth = cv2.normalize(depth_raw, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+                            # Chuyển sang ảnh xám
+                            depth_gray = cv2.cvtColor(normalized_depth, cv2.COLOR_GRAY2BGR)
+                            cv2.cvtColor(depth_gray, cv2.COLOR_BGR2GRAY)
+                            # Đảo ngược depth map xám (giá trị pixel lớn = xa, nhỏ = gần)
+                            depth_raw = 255 - normalized_depth
+                            
+                            # Hiển thị depth map xám
+                            cv2.imshow("Depth Map (Grayscale)", depth_raw)
                 except Exception as e:
                     self.get_logger().error(f'Depth engine error: {e}')
                     depth_available = False
@@ -110,17 +122,16 @@ class OptimizedImageProcessor(Node):
                                 center_y = int((y1 + y2) / 2)
                                 
                                 # Lấy giá trị độ sâu tại tâm bounding box thay vì dùng giá trị trung bình
-                                raw_depth_value = float(depth_raw[center_y, center_x])
+                                depth_value = float(depth_raw[center_y, center_x])
                                 
-                                # Xử lý để có khoảng cách đúng dựa trên giá trị inverse_depth
-                                if self.inverse_depth and raw_depth_value > 0:
-                                    # Nếu là độ sâu nghịch đảo, tính 1/depth để có khoảng cách thực
-                                    distance = 1.0 / raw_depth_value
-                                    # Áp dụng tỷ lệ nếu cần
-                                    distance = distance * self.depth_scale
+                                # Tính khoảng cách - đảo ngược depth map nếu cần
+                                if self.convert_depth_to_gray:
+                                    # Depth map đã được đảo ngược, giá trị pixel lớn = gần
+                                    # Chuẩn hóa về khoảng cách thực tế (giả sử 0-10 mét)
+                                    distance = (1.0 - depth_value / 255.0) * 10.0
                                 else:
-                                    # Nếu không phải độ sâu nghịch đảo hoặc giá trị không hợp lệ
-                                    distance = raw_depth_value
+                                    # Cách tính khoảng cách gốc
+                                    distance = depth_value
                                 
                                 self.get_logger().info(f"Khoảng cách đến {labels[boxes.index(box)]}: {distance:.2f} m")
                                 
@@ -140,6 +151,15 @@ class OptimizedImageProcessor(Node):
                                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                                 label_text = f"{labels[boxes.index(box)]}"
                                 cv2.putText(frame, label_text, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                
+                # Hiển thị trạng thái chuyển đổi depth map
+                cv2.putText(frame, 
+                           f"Depth Gray: {'Bật' if self.convert_depth_to_gray else 'Tắt'}", 
+                           (10, 60),  
+                           cv2.FONT_HERSHEY_SIMPLEX, 
+                           1, 
+                           (0, 255, 0), 
+                           2)
 
                 return frame
         except Exception as e:
@@ -205,6 +225,10 @@ class OptimizedImageProcessor(Node):
     def _quit_keypress(self):
         """Check for quit key"""
         key = cv2.waitKey(1)
+        # Thêm phím 'd' để bật/tắt chế độ depth map grayscale
+        if key == ord('d'):
+            self.convert_depth_to_gray = not self.convert_depth_to_gray
+            self.get_logger().info(f"Chuyển đổi depth map sang ảnh xám: {'Bật' if self.convert_depth_to_gray else 'Tắt'}")
         return key == 27 or key == ord('q')
 
 def main(args=None):
