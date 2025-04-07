@@ -110,7 +110,18 @@ class OptimizedImageProcessor(Node):
                                 center_y = int((y1 + y2) / 2)
                                 
                                 # Lấy giá trị độ sâu tại tâm bounding box thay vì dùng giá trị trung bình
-                                distance = float(depth_raw[center_y, center_x])
+                                raw_depth_value = float(depth_raw[center_y, center_x])
+                                
+                                # Xử lý để có khoảng cách đúng dựa trên giá trị inverse_depth
+                                if self.inverse_depth and raw_depth_value > 0:
+                                    # Nếu là độ sâu nghịch đảo, tính 1/depth để có khoảng cách thực
+                                    distance = 1.0 / raw_depth_value
+                                    # Áp dụng tỷ lệ nếu cần
+                                    distance = distance * self.depth_scale
+                                else:
+                                    # Nếu không phải độ sâu nghịch đảo hoặc giá trị không hợp lệ
+                                    distance = raw_depth_value
+                                
                                 self.get_logger().info(f"Khoảng cách đến {labels[boxes.index(box)]}: {distance:.2f} m")
                                 
                                 # Vẽ bounding box lên hình ảnh
