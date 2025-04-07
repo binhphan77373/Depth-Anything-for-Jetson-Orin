@@ -104,11 +104,31 @@ class OptimizedImageProcessor(Node):
                         if depth_available:
                             for box in boxes:
                                 x1, y1, x2, y2 = map(int, box)
-                                # Lấy vùng độ sâu tương ứng với bounding box
-                                depth_region = depth_raw[y1:y2, x1:x2]
-                                # Tính khoảng cách trung bình
-                                distance = np.mean(depth_region)
+                                
+                                # Tính tọa độ trung tâm của bounding box
+                                center_x = int((x1 + x2) / 2)
+                                center_y = int((y1 + y2) / 2)
+                                
+                                # Lấy giá trị độ sâu tại tâm bounding box thay vì dùng giá trị trung bình
+                                distance = float(depth_raw[center_y, center_x])
                                 self.get_logger().info(f"Khoảng cách đến {labels[boxes.index(box)]}: {distance:.2f} m")
+                                
+                                # Vẽ bounding box lên hình ảnh
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                
+                                # Vẽ điểm tâm của đối tượng
+                                cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)
+                                
+                                # Hiển thị thông tin nhãn và khoảng cách
+                                label_text = f"{labels[boxes.index(box)]}: {distance:.2f}m"
+                                cv2.putText(frame, label_text, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                        else:
+                            # Nếu không có thông tin độ sâu, chỉ vẽ bounding box và nhãn
+                            for box in boxes:
+                                x1, y1, x2, y2 = map(int, box)
+                                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                label_text = f"{labels[boxes.index(box)]}"
+                                cv2.putText(frame, label_text, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
                 return frame
         except Exception as e:
