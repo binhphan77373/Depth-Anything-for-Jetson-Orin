@@ -15,19 +15,19 @@ from depth import DepthEngine
 
 def calculate_distance(depth_map, box, depth_scale=1.0, inverse=True):
     """
-    Tính khoảng cách từ đối tượng đến camera dựa trên depth map
+    Calculate the distance from the object to the camera based on depth map
     
-    depth_map: mảng numpy chứa thông tin độ sâu
-    box: bounding box của đối tượng [x1, y1, x2, y2]
-    depth_scale: tỷ lệ để chuyển đổi từ giá trị độ sâu sang khoảng cách thực tế (mét)
-    inverse: đảo ngược khoảng cách (True nếu giá trị nhỏ là xa, False nếu giá trị lớn là xa)
+    depth_map: numpy array containing depth information
+    box: bounding box of the object [x1, y1, x2, y2]
+    depth_scale: scale factor to convert depth values to real-world distance (meters)
+    inverse: invert the distance (True if small values are far, False if large values are far)
     
-    Trả về: khoảng cách trung bình của đối tượng (đơn vị: mét)
+    Returns: average distance of the object (in meters)
     """
-    # Trích xuất vùng đối tượng từ depth map
+    # Extract object region from depth map
     x1, y1, x2, y2 = map(int, box)
     
-    # Lấy vùng trung tâm của đối tượng (30% diện tích giữa)
+    # Get the center region of the object (30% of the area)
     center_width = int((x2 - x1) * 0.3)
     center_height = int((y2 - y1) * 0.3)
     center_x1 = x1 + (x2 - x1)//2 - center_width//2
@@ -35,37 +35,37 @@ def calculate_distance(depth_map, box, depth_scale=1.0, inverse=True):
     center_x2 = center_x1 + center_width
     center_y2 = center_y1 + center_height
     
-    # Đảm bảo vùng trung tâm nằm trong ảnh
+    # Ensure center region is within image bounds
     center_x1 = max(0, center_x1)
     center_y1 = max(0, center_y1)
     center_x2 = min(depth_map.shape[1], center_x2)
     center_y2 = min(depth_map.shape[0], center_y2)
     
-    # Lấy phần depth map tương ứng với vùng trung tâm của đối tượng
+    # Get the depth map portion corresponding to the object's center region
     object_depth = depth_map[center_y1:center_y2, center_x1:center_x2]
     
-    # Tính khoảng cách trung bình (bỏ qua giá trị 0 nếu có)
+    # Calculate average distance (ignore zero values if any)
     if object_depth.size > 0:
-        # Loại bỏ các giá trị quá nhỏ hoặc quá lớn (outliers)
+        # Remove values that are too small or too large (outliers)
         valid_depths = object_depth[object_depth > 0.01]
         if valid_depths.size > 0:
-            # Sử dụng trung vị thay vì trung bình để giảm ảnh hưởng của nhiễu
+            # Use median instead of mean to reduce noise impact
             avg_depth = np.median(valid_depths)
             
-            # Áp dụng tỷ lệ chuyển đổi
+            # Apply conversion scale
             if inverse:
-                # Đảo ngược khoảng cách: giá trị lớn = gần, giá trị nhỏ = xa
-                # Sử dụng 1.0 làm giá trị chuẩn để đảo ngược
-                # Cần điều chỉnh hệ số này tùy theo dải giá trị của depth map
+                # Invert distance: large value = near, small value = far
+                # Use 1.0 as standard value for inversion
+                # This coefficient needs to be adjusted based on depth map value range
                 norm_factor = 1.0
                 distance = norm_factor / (avg_depth + 0.001) * depth_scale
             else:
-                # Giữ nguyên: giá trị lớn = xa, giá trị nhỏ = gần
+                # Keep original: large value = far, small value = near
                 distance = avg_depth * depth_scale
                 
             return distance
     
-    # Trả về -1 nếu không thể tính khoảng cách
+    # Return -1 if distance cannot be calculated
     return -1
 
 class OptimizedImageProcessor(Node):
@@ -100,14 +100,47 @@ class OptimizedImageProcessor(Node):
         self.frame_times = []
         
         # Depth configuration
-        self.depth_scale = 10.0
+        # Source camera calibration (Fisheye624)
+        source_focal_length = 608.032  # mm
+        source_principal_point = [717.302, 708.448]  # pixels
+        source_image_size = [2880, 2880]  # pixels
+        
+        # Destination camera calibration (Linear)
+        dest_focal_length = 150.0  # mm
+        dest_principal_point = [255.5, 255.5]  # pixels
+        dest_image_size = [512, 512]  # pixels
+        
+        # Calculate scale factors
+        # 1. Focal length scale
+        focal_length_scale = source_focal_length / dest_focal_length
+        
+        # 2. Image size scale (using average of width and height ratios)
+        width_scale = source_image_size[0] / dest_image_size[0]
+        height_scale = source_image_size[1] / dest_image_size[1]
+        image_size_scale = (width_scale + height_scale) / 2.0
+        
+        # 3. Principal point offset compensation
+        # Calculate the relative position of principal points
+        source_center_ratio_x = source_principal_point[0] / source_image_size[0]
+        source_center_ratio_y = source_principal_point[1] / source_image_size[1]
+        dest_center_ratio_x = dest_principal_point[0] / dest_image_size[0]
+        dest_center_ratio_y = dest_principal_point[1] / dest_image_size[1]
+        
+        # Calculate center offset compensation factor
+        center_offset_scale = np.sqrt(
+            (source_center_ratio_x - dest_center_ratio_x)**2 + 
+            (source_center_ratio_y - dest_center_ratio_y)**2
+        ) + 1.0  # Add 1.0 to ensure scale is at least 1.0
+        
+        # Combined scale factor
+        self.depth_scale = focal_length_scale * image_size_scale * center_offset_scale
         self.inverse_depth = True
 
     def _initialize_models(self):
         """Lazy initialization of models"""
         if self.depth_engine is None:
             with torch.cuda.device(self.device):
-                self.depth_engine = DepthEngine(raw=True)  # Quan trọng: cần raw depth map
+                self.depth_engine = DepthEngine(raw=True)
         if self.model is None:
             self.model = YOLO("/home/orin/test_ws/Depth-Anything-for-Jetson-Orin/weights/yolo11n.onnx")
 
@@ -130,13 +163,13 @@ class OptimizedImageProcessor(Node):
                 self._initialize_models()
 
             with torch.cuda.device(self.device):
-                # Depth Estimation - Lấy raw depth map từ depth_engine.process_frame
+                # Depth Estimation - Get raw depth map from depth_engine.process_frame
                 try:
                     depth_raw = self.depth_engine.process_frame(frame.copy())
                     
-                    # Kiểm tra depth_raw có hợp lệ hay không
+                    # Check if depth_raw is valid
                     if depth_raw is None or depth_raw.size == 0 or np.isnan(depth_raw).any():
-                        self.get_logger().warn("Depth map không hợp lệ, chỉ thực hiện phát hiện đối tượng")
+                        self.get_logger().warn("Invalid depth map, performing object detection only")
                         depth_available = False
                     else:
                         depth_available = True
@@ -151,11 +184,11 @@ class OptimizedImageProcessor(Node):
                 # Process Detection Results
                 for result in results:
                     if hasattr(result, 'boxes'):
-                        # Bounding boxes mỗi đối tượng được nhận diện
+                        # Bounding boxes for each detected object
                         boxes = [box.xyxy[0] for box in result.boxes]
                         labels = [result.names[int(box.cls[0])] for box in result.boxes]
                         
-                        # Tính khoảng cách nếu depth map hợp lệ
+                        # Calculate distances if depth map is valid
                         distances = []
                         if depth_available:
                             for box in boxes:
@@ -167,36 +200,36 @@ class OptimizedImageProcessor(Node):
                                     )
                                     distances.append(dist)
                                 except Exception as e:
-                                    self.get_logger().error(f"Lỗi khi tính khoảng cách: {e}")
+                                    self.get_logger().error(f"Error calculating distance: {e}")
                                     distances.append(-1)
                         else:
-                            # Nếu không có depth, đặt tất cả khoảng cách thành -1
+                            # If no depth, set all distances to -1
                             distances = [-1] * len(boxes)
                         
-                        # Vẽ bounding box và hiển thị khoảng cách
+                        # Draw bounding box and display distance
                         for i, (box, label, distance) in enumerate(zip(boxes, labels, distances)):
                             x1, y1, x2, y2 = map(int, box)
                             
-                            # Vẽ bounding box
+                            # Draw bounding box
                             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
                             
-                            # Hiển thị nhãn đối tượng
+                            # Display object label
                             cv2.putText(frame, 
                                         f"{label}", 
                                         (x1, y1 - 10),
                                         cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 2)
                             
-                            # Hiển thị khoảng cách
+                            # Display distance
                             if distance > 0:
                                 cv2.putText(frame, 
                                             f"{distance:.2f}m", 
                                             (x1, y1 - 30), 
                                             cv2.FONT_HERSHEY_PLAIN, 1, (0, 255, 0), 2)
                                 
-                                # Cảnh báo khi đối tượng quá gần (tuỳ chọn)
+                                # Warning when object is too close (optional)
                                 if distance < 1.5:
                                     cv2.putText(frame, 
-                                                f"Cảnh báo: {label} quá gần!", 
+                                                f"Warning: {label} too close!", 
                                                 (x1, y1 - 50), 
                                                 cv2.FONT_HERSHEY_PLAIN, 1, (0, 0, 255), 2)
 
