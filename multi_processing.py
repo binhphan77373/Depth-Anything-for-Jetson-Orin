@@ -110,23 +110,21 @@ class OptimizedImageProcessor(Node):
         dest_principal_point = [255.5, 255.5]  # pixels
         dest_image_size = [512, 512]  # pixels
         
-        # Target resolution
-        target_size = 640  # pixels
-        
         # Calculate scale factors
-        # 1. Focal length scale (based on physical camera parameters)
+        # 1. Focal length scale
         focal_length_scale = source_focal_length / dest_focal_length
         
-        # 2. Resolution scale (from source to target)
-        # Calculate scale from source to target resolution
-        source_to_target_scale = target_size / source_image_size[0]  # Assuming square image
+        # 2. Image size scale (using average of width and height ratios)
+        width_scale = source_image_size[0] / dest_image_size[0]
+        height_scale = source_image_size[1] / dest_image_size[1]
+        image_size_scale = (width_scale + height_scale) / 2.0
         
         # 3. Principal point offset compensation
-        # Calculate normalized principal points (relative to image center)
-        source_center_ratio_x = (source_principal_point[0] - source_image_size[0]/2) / source_image_size[0]
-        source_center_ratio_y = (source_principal_point[1] - source_image_size[1]/2) / source_image_size[1]
-        dest_center_ratio_x = (dest_principal_point[0] - dest_image_size[0]/2) / dest_image_size[0]
-        dest_center_ratio_y = (dest_principal_point[1] - dest_image_size[1]/2) / dest_image_size[1]
+        # Calculate the relative position of principal points
+        source_center_ratio_x = source_principal_point[0] / source_image_size[0]
+        source_center_ratio_y = source_principal_point[1] / source_image_size[1]
+        dest_center_ratio_x = dest_principal_point[0] / dest_image_size[0]
+        dest_center_ratio_y = dest_principal_point[1] / dest_image_size[1]
         
         # Calculate center offset compensation factor
         center_offset_scale = np.sqrt(
@@ -135,16 +133,7 @@ class OptimizedImageProcessor(Node):
         ) + 1.0  # Add 1.0 to ensure scale is at least 1.0
         
         # Combined scale factor
-        # The final scale needs to account for:
-        # 1. Physical camera differences (focal length)
-        # 2. Resolution differences (source to target)
-        # 3. Principal point offsets
-        self.depth_scale = focal_length_scale * source_to_target_scale * center_offset_scale
-        
-        # Additional scaling factor to convert from normalized depth to meters
-        # This is an empirical factor that may need adjustment based on your specific setup
-        self.depth_scale *= 0.1  # Convert to meters
-        
+        self.depth_scale = focal_length_scale * image_size_scale * center_offset_scale
         self.inverse_depth = True
 
     def _initialize_models(self):
