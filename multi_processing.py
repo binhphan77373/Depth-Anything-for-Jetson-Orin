@@ -100,40 +100,8 @@ class OptimizedImageProcessor(Node):
         self.frame_times = []
         
         # Depth configuration
-        # Source camera calibration (Fisheye624)
-        source_focal_length = 608.032  # mm
-        source_principal_point = [717.302, 708.448]  # pixels
-        source_image_size = [2880, 2880]  # pixels
-        
-        # Destination camera calibration (Linear)
-        dest_focal_length = 150.0  # mm
-        dest_principal_point = [255.5, 255.5]  # pixels
-        dest_image_size = [512, 512]  # pixels
-        
-        # Calculate scale factors
-        # 1. Focal length scale
-        focal_length_scale = source_focal_length / dest_focal_length
-        
-        # 2. Image size scale (using average of width and height ratios)
-        width_scale = source_image_size[0] / dest_image_size[0]
-        height_scale = source_image_size[1] / dest_image_size[1]
-        image_size_scale = (width_scale + height_scale) / 2.0
-        
-        # 3. Principal point offset compensation
-        # Calculate the relative position of principal points
-        source_center_ratio_x = source_principal_point[0] / source_image_size[0]
-        source_center_ratio_y = source_principal_point[1] / source_image_size[1]
-        dest_center_ratio_x = dest_principal_point[0] / dest_image_size[0]
-        dest_center_ratio_y = dest_principal_point[1] / dest_image_size[1]
-        
-        # Calculate center offset compensation factor
-        center_offset_scale = np.sqrt(
-            (source_center_ratio_x - dest_center_ratio_x)**2 + 
-            (source_center_ratio_y - dest_center_ratio_y)**2
-        ) + 1.0  # Add 1.0 to ensure scale is at least 1.0
-        
-        # Combined scale factor
-        self.depth_scale = focal_length_scale * image_size_scale * center_offset_scale
+        self.depth_scale = 3.1002  # Slope of the linear regression
+        self.depth_intercept = -0.4657  # Intercept of the linear regression
         self.inverse_depth = True
 
     def _initialize_models(self):
@@ -198,6 +166,9 @@ class OptimizedImageProcessor(Node):
                                         depth_scale=self.depth_scale,
                                         inverse=self.inverse_depth
                                     )
+                                    # Apply linear regression correction
+                                    if dist > 0:
+                                        dist = dist * self.depth_scale + self.depth_intercept
                                     distances.append(dist)
                                 except Exception as e:
                                     self.get_logger().error(f"Error calculating distance: {e}")
